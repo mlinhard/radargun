@@ -1,5 +1,12 @@
 package org.radargun.cachewrappers;
 
+import java.io.Serializable;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+
 import net.sf.ehcache.CacheManager;
 import net.sf.ehcache.Ehcache;
 import net.sf.ehcache.Element;
@@ -7,10 +14,9 @@ import net.sf.ehcache.Status;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.radargun.CacheWrapper;
+import org.radargun.features.AtomicOperationsCapable;
+import org.radargun.features.BulkOperationsCapable;
 import org.radargun.utils.TypedProperties;
-
-import java.io.Serializable;
-import java.net.URL;
 
 
 /**
@@ -21,7 +27,7 @@ import java.net.URL;
  *
  * @author Manik Surtani (manik@surtani.org)
  */
-public class EHCacheWrapper implements CacheWrapper {
+public class EHCacheWrapper implements CacheWrapper, AtomicOperationsCapable, BulkOperationsCapable {
    private CacheManager manager;
    private Ehcache cache;
    private Log log = LogFactory.getLog("org.radargun.cachewrappers.EHCacheWrapper");
@@ -92,6 +98,27 @@ public class EHCacheWrapper implements CacheWrapper {
       return cache.remove(key);
    }
 
+   @Override
+   public boolean replace(String bucket, Object key, Object oldValue, Object newValue) throws Exception {
+      Serializable sKey = (Serializable) key;
+      Element oldElement = new Element(sKey, (Serializable) oldValue);
+      Element newElement = new Element(sKey, (Serializable) newValue);
+      return cache.replace(oldElement, newElement);
+   }
+
+   @Override
+   public Object putIfAbsent(String bucket, Object key, Object value) throws Exception {
+      Element element = new Element((Serializable) key, (Serializable) value);
+      Element previous = cache.putIfAbsent(element);
+      return previous.getValue();
+   }
+
+   @Override
+   public boolean remove(String bucket, Object key, Object oldValue) throws Exception {
+      Element element = new Element((Serializable) key, (Serializable) oldValue);
+      return cache.removeElement(element);
+   }
+
    public int getNumMembers() {
       return localMode ? 0 : manager.getCacheManagerPeerProvider("RMI").listRemoteCachePeers(cache).size();
    }
@@ -129,5 +156,31 @@ public class EHCacheWrapper implements CacheWrapper {
    @Override
    public int getTotalSize() {
       return -1;
+   }
+
+   @Override
+   public Map<Object, Object> getAll(String bucket, Set<Object> keys, boolean preferAsync) throws Exception {
+      Map<Object, Object> map = new HashMap<Object, Object>();
+      Map<Object, Element> elements = cache.getAll(keys);
+      for (Element element : elements.values()) {
+         map.put(element.getObjectKey(), element.getObjectValue());
+      }
+      return map;
+   }
+
+   @Override
+   public Map<Object, Object> putAll(String bucket, Map<Object, Object> entries, boolean preferAsync) throws Exception {
+      ArrayList<Element> elements = new ArrayList<Element>(entries.size());
+      for (Map.Entry<Object, Object> entry : entries.entrySet()) {
+         elements.add(new Element(entry.getKey(), entry.getValue()));
+      }
+      cache.putAll(elements);
+      return null;
+   }
+
+   @Override
+   public Map<Object, Object> removeAll(String bucket, Set<Object> keys, boolean preferAsync) throws Exception {
+      cache.removeAll(keys);
+      return null;
    }
 }

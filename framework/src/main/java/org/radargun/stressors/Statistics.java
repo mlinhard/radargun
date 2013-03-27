@@ -3,7 +3,9 @@ package org.radargun.stressors;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
 * // TODO: Document this
@@ -21,38 +23,6 @@ public class Statistics implements Serializable {
       long respSum = getResponseTimeSum();
       if (respSum == 0) return 0;
       return (double) (NS_IN_SEC * getNumberOfRequests()) / (double) respSum;
-   }
-
-   public double getReadsPerSecond(boolean includeOverhead) {
-      return getStats.getPerSecond(includeOverhead);
-   }
-
-   public double getWritesPerSecond(boolean includeOverhead) {
-      return putStats.getPerSecond(includeOverhead);
-   }
-
-   public double getRemovesPerSecond(boolean includeOverhead) {
-      return removeStats.getPerSecond(includeOverhead);
-   }
-
-   public double getTransactionsPerSecond() {
-      return txStats.getPerSecond(false);
-   }
-
-   public long getNumReads() {
-      return getStats.requests;
-   }
-
-   public long getNumWrites() {
-      return putStats.requests;
-   }
-
-   public long getNumRemoves() {
-      return removeStats.requests;
-   }
-
-   public long getNumTransactions() {
-      return txStats.requests;
    }
 
    protected static class OperationStats implements Serializable {
@@ -91,12 +61,7 @@ public class Statistics implements Serializable {
       }
    }
 
-   protected OperationStats putStats = new OperationStats();
-   protected OperationStats getStats = new OperationStats();
-   protected OperationStats removeStats = new OperationStats();
-   protected OperationStats txStats = new OperationStats();
-
-   protected long requestsNullGet;
+   protected OperationStats[] operationStats;
 
    protected long intervalBeginTime;
    protected long intervalEndTime;
@@ -105,11 +70,21 @@ public class Statistics implements Serializable {
 
    public Statistics(boolean nodeUp) {
       this.nodeUp = nodeUp;
+      initOperationStats();
    }
 
    public Statistics() {
       intervalBeginTime = System.nanoTime();
       intervalEndTime = intervalBeginTime;
+      initOperationStats();
+   }
+
+   private void initOperationStats() {
+      int opCount = Operation.values().length;
+      operationStats = new OperationStats[opCount];
+      for (int i = 0; i < opCount; ++i) {
+         operationStats[i] = new OperationStats();
+      }
    }
 
    protected Statistics create() {
@@ -118,38 +93,31 @@ public class Statistics implements Serializable {
 
    @Override
    public String toString() {
-      return String.format("Stats(nodeUp=%s, interval=%d-%d, cacheSize=%d, putStats=[%s], getStats=[%s, nullGet=%d], removeStats=[%s], transactionStats=[%s])",
-                           nodeUp, intervalBeginTime, intervalEndTime, cacheSize, putStats, getStats, requestsNullGet, removeStats, txStats);
+      StringBuilder sb = new StringBuilder(
+            String.format("Stats(nodeUp=%s, interval=%d-%d, cacheSize=%d",
+                          nodeUp, intervalBeginTime, intervalEndTime, cacheSize));
+      Operation[] operations = Operation.values();
+      for (int i = 0; i < operations.length; ++i) {
+         sb.append(", ").append(operations[i].name()).append("=[").append(this.operationStats[i]).append("]");
+         ++i;
+      }
+      return sb.toString();
    }
 
    public boolean isNodeUp() {
       return nodeUp;
    }
 
-   public void registerRequest(long responseTime, long txOverhead, Operation operation, boolean isNull) {
+   public void registerRequest(long responseTime, long txOverhead, Operation operation) {
       OperationStats stats = getOperationStats(operation);
       stats.requests++;
       stats.responseTimeMax = Math.max(stats.responseTimeMax, responseTime);
       stats.responseTimeSum += responseTime;
       stats.txOverhead += txOverhead;
-      if (isNull) {
-         requestsNullGet++;
-      }
    }
 
    private OperationStats getOperationStats(Operation operation) {
-      switch (operation) {
-         case GET:
-            return getStats;
-         case PUT:
-            return putStats;
-         case REMOVE:
-            return removeStats;
-         case TRANSACTION:
-            return txStats;
-         default:
-            throw new IllegalArgumentException();
-      }
+      return operationStats[operation.ordinal()];
    }
 
    public void registerError(long responseTime, long txOverhead, Operation operation) {
@@ -164,11 +132,9 @@ public class Statistics implements Serializable {
    public void reset(long time) {
       intervalBeginTime = time;
       intervalEndTime = intervalBeginTime;
-      putStats = new OperationStats();
-      getStats = new OperationStats();
-      removeStats = new OperationStats();
-      txStats = new OperationStats();
-      requestsNullGet = 0;
+      for (int i = 0; i < operationStats.length; ++i) {
+         operationStats[i] = new OperationStats();
+      }
    }
 
    public Statistics copy() {
@@ -181,11 +147,10 @@ public class Statistics implements Serializable {
       result.intervalBeginTime = intervalBeginTime;
       result.intervalEndTime = intervalEndTime;
 
-      result.putStats = putStats.copy();
-      result.getStats = getStats.copy();
-      result.removeStats = removeStats.copy();
-      result.txStats = txStats.copy();
-      result.requestsNullGet = requestsNullGet;
+      result.operationStats = new OperationStats[operationStats.length];
+      for (int i = 0; i < operationStats.length; ++i) {
+         result.operationStats[i] = operationStats[i].copy();
+      }
    }
 
    /**
@@ -197,11 +162,9 @@ public class Statistics implements Serializable {
    public void merge(Statistics otherStats) {
       intervalBeginTime = Math.min(otherStats.intervalBeginTime, intervalBeginTime);
       intervalEndTime = Math.max(otherStats.intervalEndTime, intervalEndTime);
-      putStats.merge(otherStats.putStats);
-      getStats.merge(otherStats.getStats);
-      removeStats.merge(otherStats.removeStats);
-      txStats.merge(otherStats.txStats);
-      requestsNullGet += otherStats.requestsNullGet;
+      for (int i = 0; i < operationStats.length; ++i) {
+         operationStats[i].merge(otherStats.operationStats[i]);
+      }
    }
 
    public static Statistics merge(Collection<Statistics> set) {
@@ -217,19 +180,35 @@ public class Statistics implements Serializable {
    }
 
    public long getNumErrors() {
-      return putStats.errors + getStats.errors + removeStats.errors;
+      long sum = 0;
+      for (int i = 0; i < operationStats.length - 1; ++i) {
+         sum += operationStats[i].errors;
+      }
+      return sum;
    }
 
    public long getNumberOfRequests() {
-      return putStats.requests + getStats.requests + removeStats.requests;
+      long sum = 0;
+      for (int i = 0; i < operationStats.length - 1; ++i) {
+         sum += operationStats[i].requests;
+      }
+      return sum;
    }
 
    public long getResponseTimeSum() {
-      return putStats.responseTimeSum + getStats.responseTimeSum + removeStats.responseTimeSum;
+      long sum = 0;
+      for (int i = 0; i < operationStats.length - 1; ++i) {
+         sum += operationStats[i].responseTimeSum;
+      }
+      return sum;
    }
 
    public long getTxOverheadSum() {
-      return putStats.txOverhead + getStats.txOverhead + removeStats.txOverhead;
+      long sum = 0;
+      for (int i = 0; i < operationStats.length - 1; ++i) {
+         sum += operationStats[i].txOverhead;
+      }
+      return sum;
    }
 
    public double getAvgResponseTime() {
@@ -293,7 +272,7 @@ public class Statistics implements Serializable {
    }
 
    public long getRequestsNullGet() {
-      return requestsNullGet;
+      return operationStats[Operation.GET_NULL.ordinal()].requests;
    }
 
    public static long getIntervalBeginMin(List<Statistics> stats) {
@@ -361,9 +340,9 @@ public class Statistics implements Serializable {
    public static long getMaxRespTime(List<Statistics> stats) {
       long ret = Long.MIN_VALUE;
       for (Statistics s : stats) {
-         ret = Math.max(ret, s.getStats.responseTimeMax);
-         ret = Math.max(ret, s.putStats.responseTimeMax);
-         ret = Math.max(ret, s.removeStats.responseTimeMax);
+         for (int i = 0; i < s.operationStats.length - 1; ++i) { // ignores txStats
+            ret = Math.max(ret, s.operationStats[i].responseTimeMax);
+         }
       }
       return ret;
    }
@@ -390,5 +369,28 @@ public class Statistics implements Serializable {
          ret += s.getRequestsNullGet();
       }
       return ret;
+   }
+
+   public Map<String, Object> getResultsMap(int numThreads, String prefix) {
+      Map<String, Object> results = new LinkedHashMap<String, Object>();
+      results.put("DURATION", getResponseTimeSum() + getTxOverheadSum());
+      results.put("FAILURES", getNumErrors());
+      results.put("REQ_PER_SEC", numThreads * getOperationsPerSecond());
+      Operation[] operations = Operation.values();
+      for (int i = 0; i < operations.length; ++i) {
+         OperationStats os = operationStats[i];
+         String name = operations[i].getAltName();
+         if (os.requests > 0) {
+            results.put(prefix + name + "_COUNT", os.requests);
+            if (os.errors != 0) {
+               results.put(prefix + name + "_ERRORS", os.errors);
+            }
+            results.put(prefix + name + "S_PER_SEC", numThreads * os.getPerSecond(true));
+            if (os.txOverhead != 0) {
+               results.put(prefix + name + "S_PER_SEC_NET", numThreads * os.getPerSecond(false));
+            }
+         }
+      }
+      return results;
    }
 }
